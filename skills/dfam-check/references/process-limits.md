@@ -48,11 +48,21 @@ angle** (from the overhang map). Those rows can be compared directly against
 the limits above.
 
 **Min hole diameter**, **min positive feature** and **max unsupported bridge**
-have no measured counterpart yet. Treat them the way the trapped-powder gap is
-treated: report them as not checked, rather than inferring them from a render,
+have no measured counterpart yet: report them as not checked, rather than inferring them from a render,
 the bounding box, or the triangle count. A limit with no measurement behind it
 is not a finding.
 
-Wall thickness is measured per connected body. An assembly reports a
+Wall thickness is measured per printed body. An assembly reports a
 `per_body` breakdown alongside the pooled figures, because a ray crossing a
-mating clearance would otherwise record the fit gap as a wall.
+mating clearance would otherwise record the fit gap as a wall. A body is a
+shell together with any sealed cavity inside it, so a hollowed part's skin is
+measured between its outer and inner surfaces; a captive part sitting inside
+a cavity is its own body.
+
+**Trapped material** is measured only for its worst case: `mesh.sealed_cavity_count`
+counts fully enclosed cavities. For SLS, MJF and metal PBF a sealed cavity
+traps unsintered powder, and for SLA/DLP it traps uncured resin: report each
+one as a violation needing escape holes (Hubs SLS: at least two, ≥5 mm;
+Formlabs SLA: ≥3.5 mm, placed for drainage). For FDM a sealed cavity is
+normal infill-like geometry and is not a finding by itself. A cavity that is open but drains through holes
+below those sizes is not detected: report escape-hole size as not checked.

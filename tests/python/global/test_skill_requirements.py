@@ -103,5 +103,54 @@ class SkillLaunchCommand(unittest.TestCase):
         self.assertEqual(launch_command("python", VERSION), LAUNCH.format(version=VERSION, tool="python"))
 
 
+_SCRIPT_RUN = re.compile(r"uv run --script <skill-dir>/(?P<path>scripts/[A-Za-z0-9_./-]+\.py)")
+_BARE_PYTHON_SCRIPT = re.compile(r"(?:^|[`\s])python3? scripts/", re.M)
+_INLINE_BLOCK = re.compile(r"^# /// script\n(?P<body>(?:^#.*\n)*?)^# ///$", re.M)
+_REQ_NAME = re.compile(r"^[A-Za-z0-9_.-]+")
+
+
+class CadgenFreeSkillScripts(unittest.TestCase):
+    """A cadgen-free skill's script runs from its own inline metadata, never the project's Python.
+
+    `pip install -r requirements.txt` into "the active project environment" fails on
+    PEP 668 interpreters (Homebrew, Debian, macOS system Python), pollutes the user's
+    project, and leaves `python` unresolved where only `python3` exists. uv is already
+    a prerequisite of the plugin, so each script carries a PEP 723 block and the skill
+    launches it with `uv run --script`: one cached environment per script, nothing
+    installed anywhere the user owns.
+    """
+
+    def test_no_skill_runs_its_scripts_with_a_bare_interpreter(self) -> None:
+        for skill in SKILLS:
+            if _teaches_cadgen(skill):
+                continue  # cadgen skills define `python` as the pinned launch command
+            with self.subTest(skill=skill.name):
+                self.assertIsNone(_BARE_PYTHON_SCRIPT.search(_docs_text(skill)))
+
+    def test_every_launched_script_carries_inline_metadata_covering_its_requirements(self) -> None:
+        checked = 0
+        for skill in SKILLS:
+            launched = set(_SCRIPT_RUN.findall((skill / "SKILL.md").read_text(encoding="utf-8")))
+            manifest = skill / "requirements.txt"
+            required = set()
+            if manifest.is_file():
+                for line in manifest.read_text(encoding="utf-8").splitlines():
+                    match = _REQ_NAME.match(line.split("#")[0].strip())
+                    if match:
+                        required.add(match.group(0).lower())
+            for rel in launched:
+                with self.subTest(skill=skill.name, script=rel):
+                    script = skill / rel
+                    self.assertTrue(script.is_file(), f"SKILL.md launches a missing script: {rel}")
+                    block = _INLINE_BLOCK.search(script.read_text(encoding="utf-8"))
+                    self.assertIsNotNone(block, f"{rel} has no `# /// script` block")
+                    body = block.group("body").lower()
+                    self.assertIn("requires-python", body)
+                    missing = sorted(name for name in required if f'"{name}' not in body)
+                    self.assertEqual(missing, [], f"{rel} inline deps drifted from requirements.txt")
+                    checked += 1
+        self.assertGreaterEqual(checked, 4, "found almost no launched skill scripts")
+
+
 if __name__ == "__main__":
     unittest.main()

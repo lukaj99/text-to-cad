@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.11"
+# dependencies = []
+# ///
 """Search step.parts for common standard parts and download STEP files."""
 
 from __future__ import annotations

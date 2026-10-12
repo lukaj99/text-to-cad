@@ -17,16 +17,18 @@ starts print jobs.
 
 ## Geometry Inspection
 
-Use `scripts/dfam_tool.py` in the active project Python environment for all
-geometry facts (install `requirements.txt` first — every run needs it). The tool is fact-only:
+Use `scripts/dfam_tool.py` for all geometry facts. Run it with `uv run --script`
+from any folder, with `<skill-dir>` this skill's own directory: its inline metadata
+gives it a cached environment of its own, so nothing is installed into the
+project's Python and no `requirements.txt` step is needed. The tool is fact-only:
 it reports measurements and never emits pass/fail or readiness statuses.
 Comparisons and verdicts belong to this workflow. Do not estimate wall
 thickness, overhang angles, or support volume by eye or from renders when the
 tool can measure them.
 
 ```bash
-python scripts/dfam_tool.py measure part.stl --angle-limit 45
-python scripts/dfam_tool.py orientations part.stl --angle-limit 45
+uv run --script <skill-dir>/scripts/dfam_tool.py measure part.stl --angle-limit 45
+uv run --script <skill-dir>/scripts/dfam_tool.py orientations part.stl --angle-limit 45
 ```
 
 Set `--angle-limit` to the target process's self-supporting angle from
@@ -46,8 +48,17 @@ the dependency set is incomplete, `support_volume` on geometry with no convex
 hull. That report is PARTIAL: it carries `"partial": true`, names the families
 in `partial_sections`, and the command exits **2** (0 is a complete report, 1 a
 mesh that would not load at all). Treat every such object as an unmeasured fact
-(`❓ need more info`), never as a measurement of zero, and reinstall
-`requirements.txt` before comparing wall limits.
+(`❓ need more info`), never as a measurement of zero, and resolve the named
+error (rerun through `uv run --script` if the script was started any other way)
+before comparing wall limits.
+
+`body_count` counts printed bodies, not shells: a hollowed part's sealed cavity
+is part of its body, so its skin is measured between outer and inner surface,
+and `mesh.sealed_cavity_count` reports it. A sealed cavity is itself a finding for
+powder and resin processes (trapped material; supports that cannot be
+removed) — see `references/process-limits.md` for escape-hole guidance.
+Pass `--units m|cm|in` when the file is not in millimetres; `scale.units_suspect`
+says when that is likely.
 
 ## Workflow
 

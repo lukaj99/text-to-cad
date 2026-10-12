@@ -15,8 +15,8 @@ thresholds.
 ## Measurement: `scripts/mold_tool.py`
 
 ```bash
-python scripts/mold_tool.py measure part.stl --pull z [--units mm]
-python scripts/mold_tool.py pulls part.stl
+uv run --script <skill-dir>/scripts/mold_tool.py measure part.stl --pull z [--units mm]
+uv run --script <skill-dir>/scripts/mold_tool.py pulls part.stl
 ```
 
 Input is a mesh (`.stl`, `.obj`, `.ply`, `.3mf`). For a STEP, export an STL
