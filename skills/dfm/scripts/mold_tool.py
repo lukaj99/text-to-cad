@@ -1,4 +1,8 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["trimesh>=4", "numpy", "rtree", "scipy", "networkx", "lxml"]
+# ///
 """Fact-only injection-molding geometry measurements for mesh files.
 
 Reports measurements as JSON. It never emits pass/fail, verdicts, or

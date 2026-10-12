@@ -39,15 +39,15 @@ built-in profiles.
    temperature can damage the printer.
 
    ```bash
-   python scripts/orca_presets.py --list machine --match "MK4S"
-   python scripts/orca_presets.py --list process --match "@MK4S 0.4"
-   python scripts/orca_presets.py --list filament --match "PLA @MK4S"
+   uv run --script <skill-dir>/scripts/orca_presets.py --list machine --match "MK4S"
+   uv run --script <skill-dir>/scripts/orca_presets.py --list process --match "@MK4S 0.4"
+   uv run --script <skill-dir>/scripts/orca_presets.py --list filament --match "PLA @MK4S"
    ```
 
 2. Write the complete presets:
 
    ```bash
-   python scripts/orca_presets.py --printer "Prusa MK4S 0.4 nozzle" \
+   uv run --script <skill-dir>/scripts/orca_presets.py --printer "Prusa MK4S 0.4 nozzle" \
      --process "0.20mm SPEED @MK4S 0.4" --filament "Prusa Generic PLA @MK4S" \
      --out presets
    ```

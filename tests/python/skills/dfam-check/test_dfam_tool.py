@@ -292,6 +292,88 @@ class MultiBodyWallTest(unittest.TestCase):
         self.assertAlmostEqual(facts["median_mm"], 2.0, delta=0.4)
 
 
+class SealedCavityTest(unittest.TestCase):
+    """A hollowed part is one body: an outer shell and a sealed inner one.
+
+    `mesh.split` returns shells, so measuring each shell on its own let a ray
+    from the outer skin miss the cavity and cross the whole part: a 1 mm skin
+    read as the part's full width -- a too-thin wall reported as a solid block.
+    """
+
+    def _sealed(self, wall: float, outer: float = 20.0):
+        return Box(outer, outer, outer) - Box(outer - 2 * wall, outer - 2 * wall, outer - 2 * wall)
+
+    def test_sealed_shell_is_measured_between_its_two_surfaces(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            mesh = dfam_tool._load(_stl(self._sealed(1.0), Path(td), "sealed1"))
+            walls = dfam_tool._wall_facts(mesh, samples=800)
+            facts = dfam_tool._mesh_facts(mesh)
+
+        self.assertEqual(facts["shell_count"], 2)
+        self.assertEqual(facts["body_count"], 1)
+        self.assertEqual(facts["sealed_cavity_count"], 1)
+        self.assertNotIn("per_body", walls)
+        self.assertAlmostEqual(walls["median_mm"], 1.0, delta=0.1)
+        self.assertLess(walls["p05_mm"], 1.2)
+
+    def test_captive_part_in_a_cavity_stays_its_own_body(self) -> None:
+        """Depth parity: housing (0) > cavity (1) > captive ball (2).
+
+        The ball is a separate printed body, so the clearance around it must
+        not be measured as a wall, and the housing skin still reads 1 mm.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            export_stl(self._sealed(1.0), str(tmp / "housing.stl"))
+            export_stl(Box(6, 6, 6), str(tmp / "captive.stl"))
+            merged = trimesh.util.concatenate([
+                trimesh.load(str(tmp / "housing.stl"), force="mesh"),
+                trimesh.load(str(tmp / "captive.stl"), force="mesh"),
+            ])
+            merged.export(str(tmp / "captive_assembly.stl"))
+            mesh = dfam_tool._load(str(tmp / "captive_assembly.stl"))
+            walls = dfam_tool._wall_facts(mesh, samples=2000)
+            facts = dfam_tool._mesh_facts(mesh)
+
+        self.assertEqual(facts["body_count"], 2)
+        self.assertEqual(facts["sealed_cavity_count"], 1)
+        mins = sorted(b["median_mm"] for b in walls["per_body"])
+        self.assertAlmostEqual(mins[0], 1.0, delta=0.1)   # housing skin
+        self.assertAlmostEqual(mins[1], 6.0, delta=0.3)   # solid captive block
+
+    def test_a_reversed_cavity_is_rewound_before_casting(self) -> None:
+        """An export that winds the cavity outward would aim every ray into the void."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            outer = trimesh.creation.box((20, 20, 20))
+            inner = trimesh.creation.box((18, 18, 18))   # NOT inverted: wrong winding
+            trimesh.util.concatenate([outer, inner]).export(str(tmp / "bad_winding.stl"))
+            walls = dfam_tool._wall_facts(dfam_tool._load(str(tmp / "bad_winding.stl")), samples=800)
+
+        self.assertAlmostEqual(walls["median_mm"], 1.0, delta=0.1)
+
+
+class SamplingTest(unittest.TestCase):
+    def test_coarse_mesh_still_gets_the_requested_sample_budget(self) -> None:
+        """A CAD box is 12 triangles; centroid sampling capped the field at 12 rays."""
+        with tempfile.TemporaryDirectory() as td:
+            mesh = dfam_tool._load(_stl(_hollow_box(2.0), Path(td), "coarse"))
+            self.assertLess(len(mesh.faces), 200)
+            facts = dfam_tool._wall_facts(mesh, samples=1000)
+
+        self.assertGreater(facts["samples_valid"], 900)
+
+    def test_units_flag_scales_to_millimetres(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "metres.stl"
+            trimesh.creation.box((0.02, 0.02, 0.015)).export(str(path))
+            mesh = dfam_tool._load(str(path), "m")
+            scale = dfam_tool._scale_hint(mesh)
+
+        self.assertAlmostEqual(float(mesh.extents[0]), 20.0, places=6)
+        self.assertFalse(scale["units_suspect"])
+
+
 class ResilienceTest(unittest.TestCase):
     def test_one_failing_family_does_not_lose_the_others(self) -> None:
         """A planar mesh kills convex_hull; the rest of the report survives."""

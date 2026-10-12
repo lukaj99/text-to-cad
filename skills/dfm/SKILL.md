@@ -95,12 +95,13 @@ uploads, ordering, or machine operation.
 ## Geometry measurement (injection molding only)
 
 `scripts/mold_tool.py` is the one measurement script here; the other two
-processes have no geometry analyzer. Install `requirements.txt` first — only
-these measurements need it.
+processes have no geometry analyzer. Run it with `uv run --script`, with
+`<skill-dir>` this skill's own directory: its inline metadata gives it a cached
+environment, so nothing is installed into the project's Python.
 
 ```bash
-python scripts/mold_tool.py measure part.stl --pull z
-python scripts/mold_tool.py pulls part.stl
+uv run --script <skill-dir>/scripts/mold_tool.py measure part.stl --pull z
+uv run --script <skill-dir>/scripts/mold_tool.py pulls part.stl
 ```
 
 The tool is fact-only: it reports measurements and never emits pass/fail.

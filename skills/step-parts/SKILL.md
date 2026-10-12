@@ -32,9 +32,9 @@ When a CAD assembly includes named off-the-shelf actuators, servos, motors, elec
 Use `scripts/download_step_part.py` for deterministic search, download, and checksum verification:
 
 ```bash
-python scripts/download_step_part.py "M3 socket head 12" --download
-python scripts/download_step_part.py --id iso4762_socket_head_cap_screw_m3x12 --download
-python scripts/download_step_part.py "bearing 608zz" --limit 5
+uv run --script <skill-dir>/scripts/download_step_part.py "M3 socket head 12" --download
+uv run --script <skill-dir>/scripts/download_step_part.py --id iso4762_socket_head_cap_screw_m3x12 --download
+uv run --script <skill-dir>/scripts/download_step_part.py "bearing 608zz" --limit 5
 ```
 
 Useful options:

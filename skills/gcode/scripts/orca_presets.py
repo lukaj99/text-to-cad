@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.11"
+# dependencies = []
+# ///
 """Make complete OrcaSlicer presets for its command line.
 
 OrcaSlicer stores a preset as its differences from a parent (`inherits`), and

@@ -1,17 +1,22 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["trimesh>=4", "numpy", "rtree", "scipy", "networkx", "lxml"]
+# ///
 """Fact-only DfAM geometry measurements for mesh files.
 
 Reports measurements as JSON. It never emits pass/fail, verdicts, or
 readiness statuses; comparisons against process limits belong to the
 skill workflow using `references/process-limits.md`.
 
-Requires the skill's full dependency set (pip install -r requirements.txt).
-Without scipy/networkx the wall-thickness block degrades to an error object
-while the rest of the report still prints.
+Run it with `uv run --script dfam_tool.py ...`: the inline metadata above
+gives it its own cached environment, so nothing is installed into the
+project's interpreter. Without scipy/networkx the wall-thickness block
+degrades to an error object while the rest of the report still prints.
 
 Usage:
-    python dfam_tool.py measure <mesh> [--samples 2000] [--angle-limit 45]
-    python dfam_tool.py orientations <mesh> [--angle-limit 45]
+    uv run --script dfam_tool.py measure <mesh> [--samples 2000] [--angle-limit 45] [--units mm]
+    uv run --script dfam_tool.py orientations <mesh> [--angle-limit 45] [--units mm]
 
 Exit codes: 0 a complete report, 2 a PARTIAL one (a fact family failed; the
 report carries `"partial": true` and names the families in `partial_sections`),
@@ -32,23 +37,137 @@ import numpy as np
 import trimesh
 
 
-def _load(path: str) -> trimesh.Trimesh:
+#: Length units a mesh file may carry, as a factor to millimetres. STL, OBJ,
+#: PLY and 3MF are unitless in practice, so the caller states which one.
+_UNITS_MM = {"mm": 1.0, "cm": 10.0, "m": 1000.0, "in": 25.4, "ft": 304.8}
+
+
+def _load(path: str, units: str = "mm") -> trimesh.Trimesh:
+    """Read a mesh, scale it to millimetres, and drop degenerate faces.
+
+    A zero-area triangle -- build123d exports a couple on any sphere -- has a
+    NaN normal, which would otherwise reach the JSON as a bare `NaN`.
+    """
     mesh = trimesh.load(path, force="mesh")
     if isinstance(mesh, trimesh.Scene):
         mesh = mesh.dump(concatenate=True)
+    factor = _UNITS_MM[units]
+    if factor != 1.0:
+        mesh.apply_scale(factor)
+    keep = mesh.nondegenerate_faces()
+    dropped = int(len(mesh.faces)) - int(keep.sum())
+    if dropped:
+        mesh.update_faces(keep)
+    mesh.metadata["degenerate_faces_dropped"] = dropped
+    mesh.metadata["source_units"] = units
     return mesh
 
 
+def _probe_points(shell: trimesh.Trimesh, count: int = 3) -> np.ndarray:
+    """A few points on a shell's surface, nudged off it along -normal.
+
+    Testing whether shell A lies inside shell B only needs points of A, and
+    A's own surface is fine for that -- shells in a valid mesh do not touch.
+    Several points with a majority vote keep one unlucky ray from deciding.
+    """
+    idx = np.argsort(-shell.area_faces)[:count]
+    return shell.triangles_center[idx] - shell.face_normals[idx] * 1e-4
+
+
+def _bodies(mesh: trimesh.Trimesh) -> tuple[list[trimesh.Trimesh], int]:
+    """Connected shells grouped into printed bodies, each with its sealed cavities.
+
+    `mesh.split` returns SHELLS, not bodies. A hollowed part -- the standard
+    DfAM move for SLS/SLA/PBF, and the one where wall thickness matters most --
+    is one body made of an outer shell and an inner cavity shell. Measured as
+    two separate meshes, a ray from the outer skin never meets the cavity and
+    crosses the whole part instead, so a 1 mm shell reports the part's full
+    width as its wall.
+
+    Shells are classified by nesting depth: a shell inside an odd number of
+    other shells is a cavity of the shell immediately enclosing it; at an even
+    depth it is a body of its own (a captive print-in-place part sitting in a
+    cavity is depth 2 -- its own body, so the clearance around it is still
+    never measured as a wall). Containment needs a watertight container; an
+    open shell contains nothing, which falls back to treating every shell as
+    its own body, as before.
+    """
+    shells = list(mesh.split(only_watertight=False))
+    if len(shells) <= 1:
+        return [mesh], 0
+
+    probes = [_probe_points(s) for s in shells]
+    bounds = [s.bounds for s in shells]
+    containers: list[list[int]] = [[] for _ in shells]
+    for j, outer in enumerate(shells):
+        if not outer.is_watertight:
+            continue
+        lo, hi = bounds[j]
+        for i in range(len(shells)):
+            if i == j:
+                continue
+            # Cheap reject first: a shell inside another lies inside its box.
+            if np.any(bounds[i][0] < lo) or np.any(bounds[i][1] > hi):
+                continue
+            inside = outer.contains(probes[i])
+            if inside.sum() * 2 > len(inside):
+                containers[i].append(j)
+
+    depth = [len(c) for c in containers]
+    body_of: dict[int, int] = {}
+    for i, enclosing in enumerate(containers):
+        if depth[i] % 2 == 0:
+            body_of[i] = i
+        else:
+            # The immediately enclosing shell is the deepest one that contains i.
+            body_of[i] = max(enclosing, key=lambda j: depth[j])
+
+    members: dict[int, list[trimesh.Trimesh]] = {}
+    voids = 0
+    for i, shell in enumerate(shells):
+        root = body_of[i]
+        if root != i:
+            voids += 1
+            # A cavity's normals must point INTO the void (away from material),
+            # which makes its signed volume negative. An export that wound it
+            # the other way would send every thickness ray into the void.
+            if shell.is_watertight and float(shell.volume) > 0.0:
+                shell = shell.copy()
+                shell.invert()
+        members.setdefault(root, []).append(shell)
+
+    bodies = [
+        group[0] if len(group) == 1 else trimesh.util.concatenate(group)
+        for _, group in sorted(members.items())
+    ]
+    return bodies, voids
+
+
 def _mesh_facts(mesh: trimesh.Trimesh) -> dict:
-    return {
+    bodies, voids = _bodies(mesh)
+    facts = {
         "bbox_mm": [round(float(v), 2) for v in mesh.extents],
         "volume_mm3": round(float(abs(mesh.volume)), 1) if mesh.is_volume else None,
         "surface_area_mm2": round(float(mesh.area), 1),
         "triangle_count": int(len(mesh.faces)),
         "watertight": bool(mesh.is_watertight),
         "euler_number": int(mesh.euler_number),
-        "body_count": int(mesh.body_count),
+        "body_count": len(bodies),
+        "shell_count": int(mesh.body_count),
+        "source_units": mesh.metadata.get("source_units", "mm"),
     }
+    dropped = int(mesh.metadata.get("degenerate_faces_dropped", 0))
+    if dropped:
+        facts["degenerate_faces_dropped"] = dropped
+    if voids:
+        facts["sealed_cavity_count"] = voids
+        facts["sealed_cavity_note"] = (
+            f"{voids} sealed internal cavit{'y' if voids == 1 else 'ies'}, measured as part of "
+            "the enclosing body. A sealed cavity traps unsintered powder (SLS/MJF/PBF) or uncured "
+            "resin (SLA/DLP), and any down-facing cavity surface below the angle limit is "
+            "counted in the overhang facts but cannot have its support removed."
+        )
+    return facts
 
 
 def _overhang_facts(mesh: trimesh.Trimesh, angle_limit: float) -> dict:
@@ -108,11 +227,13 @@ def _wall_facts(mesh: trimesh.Trimesh, samples: int, seed: int = 42) -> dict:
     clearance and land on its neighbour, which records the fit gap as a wall.
     A tight-clearance assembly then reports a wall-thickness violation that no
     single part actually has. Splitting first makes that impossible, because
-    each body is only ever measured against itself.
+    each body is only ever measured against itself. A body here is a shell
+    together with its sealed cavities (`_bodies`), so a hollowed part's skin is
+    measured between its outer and inner surfaces.
     """
-    bodies = mesh.split(only_watertight=False)
+    bodies, _ = _bodies(mesh)
     if len(bodies) <= 1:
-        facts = _wall_facts_single(mesh, samples, seed)
+        facts = _wall_facts_single(bodies[0], samples, seed)
         facts.pop("_thickness", None)
         facts.pop("_origins", None)
         return facts
@@ -177,13 +298,18 @@ def _wall_facts(mesh: trimesh.Trimesh, samples: int, seed: int = 42) -> dict:
 
 
 def _wall_facts_single(mesh: trimesh.Trimesh, samples: int, seed: int = 42) -> dict:
-    """Ray-cast thickness field for ONE connected body."""
-    rng = np.random.default_rng(seed)
-    n = min(samples, max(len(mesh.faces), 1))
+    """Ray-cast thickness field for ONE body (a shell plus its sealed cavities).
 
-    # Area weighting needs a positive total. A mesh of only degenerate faces
+    Ray origins are points sampled uniformly by area over the surface, not
+    triangle centroids: a CAD export tessellates flat walls into a handful of
+    large triangles (a box is 12), so centroid sampling both capped the budget
+    at the triangle count and only ever probed the middle of each face.
+    """
+    n = max(int(samples), 1)
+
+    # Area sampling needs a positive total. A mesh of only degenerate faces
     # has none, and is not something a thickness field can describe - say so
-    # rather than dividing by zero inside rng.choice.
+    # rather than dividing by zero.
     total_area = float(mesh.area_faces.sum())
     if not np.isfinite(total_area) or total_area <= 0.0:
         return {
@@ -191,10 +317,9 @@ def _wall_facts_single(mesh: trimesh.Trimesh, samples: int, seed: int = 42) -> d
             "note": "no positive face area; mesh is degenerate, thickness not measured",
         }
 
-    face_idx = rng.choice(len(mesh.faces), size=n,
-                          p=mesh.area_faces / total_area)
+    points, face_idx = trimesh.sample.sample_surface(mesh, n, seed=seed)
 
-    origins = mesh.triangles_center[face_idx]
+    origins = np.asarray(points, dtype=float)
     directions = -mesh.face_normals[face_idx]
     origins = origins + directions * 1e-4
 
@@ -347,8 +472,8 @@ def _scale_hint(mesh: trimesh.Trimesh) -> dict:
         "units_suspect": suspect,
         "note": (
             "bbox diagonal under 1 mm; source is probably in meters or inches. "
-            "Rescale to millimetres before trusting overhang, support or "
-            "thickness numbers."
+            "Re-run with --units m (or in/cm) before trusting overhang, support "
+            "or thickness numbers."
         ) if suspect else "bbox consistent with millimetre units",
     }
 
@@ -361,15 +486,19 @@ def main() -> int:
     m.add_argument("mesh")
     m.add_argument("--samples", type=int, default=2000)
     m.add_argument("--angle-limit", type=float, default=45.0)
+    m.add_argument("--units", choices=sorted(_UNITS_MM), default="mm",
+                   help="units the mesh file is in; scaled to mm before measuring")
 
     o = sub.add_parser("orientations", help="candidate orientation measurements")
     o.add_argument("mesh")
     o.add_argument("--angle-limit", type=float, default=45.0)
+    o.add_argument("--units", choices=sorted(_UNITS_MM), default="mm",
+                   help="units the mesh file is in; scaled to mm before measuring")
 
     args = ap.parse_args()
 
     try:
-        mesh = _load(args.mesh)
+        mesh = _load(args.mesh, args.units)
     except Exception as e:
         print(json.dumps({"error": f"failed to load mesh: {e}"}))
         return 1
